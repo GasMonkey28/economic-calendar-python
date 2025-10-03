@@ -120,7 +120,9 @@ def get_calendar():
                     event_data['forecast'] = ''
                     event_data['previous'] = ''
                 
-                events.append(event_data)
+# Only add US events
+                if country == "United States":
+                    events.append(event_data)
                 
             except Exception as e:
                 # Skip problematic rows
