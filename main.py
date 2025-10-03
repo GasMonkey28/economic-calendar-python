@@ -25,7 +25,13 @@ def get_chrome_driver():
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    driver = webdriver.Chrome(options=chrome_options)
+    # Use system chromium binary
+    chrome_options.binary_location = '/usr/bin/chromium'
+    
+    # Use system chromedriver
+    service = Service('/usr/bin/chromedriver')
+    
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 @app.route('/')
