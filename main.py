@@ -1,187 +1,108 @@
-# main.py - Filter for US events this week and next week (Selenium version)
+# main.py - Forex Factory scraper (no Selenium needed)
 
 from flask import Flask, jsonify, request
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-import time
-import json
 
 app = Flask(__name__)
 
-def get_chrome_driver():
-    """Initialize Chrome driver with appropriate options"""
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--disable-dev-tools')
-    chrome_options.add_argument('--disable-extensions')
-    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-    chrome_options.add_argument('--window-size=1920,1080')
-    chrome_options.add_argument('--remote-debugging-port=9222')
-    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-    
-    # Create driver without specifying paths - use system Chrome
-    driver = webdriver.Chrome(options=chrome_options)
-    return driver
-
 @app.route('/')
 def home():
-    """Main endpoint - returns economic calendar"""
     return jsonify({
-        "message": "Economic Calendar API (Selenium Version)",
+        "message": "Economic Calendar API (Forex Factory)",
         "endpoints": {
-            "/calendar": "Get economic calendar events (default: US only, this week + next week)",
-            "/calendar?weeks=1": "Get only this week",
-            "/calendar?weeks=2": "Get this week + next week (default)",
-            "/calendar?country=all": "Get all countries",
-            "/health": "Health check",
-            "/": "This page"
+            "/calendar": "Get economic calendar events",
+            "/health": "Health check"
         }
     })
 
 @app.route('/calendar')
 def get_calendar():
-    """Scrape and return economic calendar from Investing.com using Selenium"""
-    driver = None
     try:
-        # Get query parameters
         weeks_param = request.args.get('weeks', '2')
-        country_filter = request.args.get('country', 'US')
+        num_weeks = int(weeks_param) if weeks_param.isdigit() else 2
         
-        try:
-            num_weeks = int(weeks_param)
-        except:
-            num_weeks = 2
-        
-        # Calculate date range
         today = datetime.now().date()
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=7 * num_weeks - 1)
         
-        # Initialize Selenium driver
-        driver = get_chrome_driver()
-        driver.get("https://www.investing.com/economic-calendar/")
+        # Forex Factory URL - includes this week and next week by default
+        url = "https://www.forexfactory.com/calendar"
         
-        # Wait for the table to load
-        wait = WebDriverWait(driver, 15)
-        wait.until(EC.presence_of_element_located((By.ID, "economicCalendarData")))
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
         
-        # Give extra time for JavaScript to fully load
-        time.sleep(3)
-        
-        # Try to load next week's data by clicking the time filter
-        try:
-            # Look for "This Week" or date navigation buttons and click next week
-            time_filter_buttons = driver.find_elements(By.CSS_SELECTOR, ".calendarFilters__item")
-            for button in time_filter_buttons:
-                if "next week" in button.text.lower() or "next" in button.text.lower():
-                    driver.execute_script("arguments[0].click();", button)
-                    time.sleep(2)
-                    break
-        except:
-            pass
-        
-        # Scroll to load more content
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
-        
-        # Get the page source after all loading
-        html = driver.page_source
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # Find the table
-        table = soup.find('table', {'id': 'economicCalendarData'})
-        
-        if not table:
-            return jsonify({"error": "Could not find calendar table"}), 500
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
         
         events = []
-        rows = table.find_all('tr', {'class': 'js-event-item'})
-        
-        # Track current date from headers
         current_date = today
+        
+        # Find all calendar rows
+        rows = soup.find_all('tr', class_='calendar__row')
         
         for row in rows:
             try:
-                # Check if this row has a date attribute
-                event_date_attr = row.get('data-event-datetime')
-                if event_date_attr:
+                # Check if this is a date header row
+                date_cell = row.find('td', class_='calendar__cell calendar__date')
+                if date_cell and date_cell.get_text(strip=True):
+                    date_text = date_cell.get_text(strip=True)
                     try:
-                        # Parse date from timestamp (format: 2025/10/03)
-                        current_date = datetime.strptime(event_date_attr.split()[0], '%Y/%m/%d').date()
+                        # Parse date like "Fri Oct 4"
+                        current_date = datetime.strptime(f"{date_text} {today.year}", "%a %b %d %Y").date()
                     except:
                         pass
                 
-                # Skip if date is outside our range
+                # Skip if outside date range
                 if current_date < week_start or current_date > week_end:
                     continue
                 
-                # Extract event data
-                time_elem = row.find('td', {'class': 'time'})
-                event_elem = row.find('td', {'class': 'event'})
-                impact_elem = row.find('td', {'class': 'sentiment'})
+                # Extract event details
+                time_cell = row.find('td', class_='calendar__cell calendar__time')
+                currency_cell = row.find('td', class_='calendar__cell calendar__currency')
+                impact_cell = row.find('td', class_='calendar__cell calendar__impact')
+                event_cell = row.find('td', class_='calendar__cell calendar__event')
                 
-                # Extract country
-                country = 'N/A'
-                country_elem = row.find('td', {'class': 'flagCur'})
-                if country_elem:
-                    span = country_elem.find('span')
-                    if span and span.get('title'):
-                        country = span.get('title')
-                    elif country_elem.find('i'):
-                        i_tag = country_elem.find('i')
-                        if i_tag.get('title'):
-                            country = i_tag.get('title')
-                    elif country_elem.get('title'):
-                        country = country_elem.get('title')
-                    else:
-                        flag_span = country_elem.find('span', class_='ceFlags')
-                        if flag_span:
-                            classes = flag_span.get('class', [])
-                            for cls in classes:
-                                if cls.startswith('ceFlags_'):
-                                    country = cls.replace('ceFlags_', '').upper()
-                                    break
+                if not event_cell:
+                    continue
                 
-                # Filter by country if needed
-                if country_filter.lower() != 'all' and country != "United States":
+                # Get country/currency
+                country = currency_cell.get_text(strip=True) if currency_cell else 'N/A'
+                
+                # Filter for USD (US events)
+                if country != 'USD':
                     continue
                 
                 # Get impact level
                 impact = 0
-                if impact_elem:
-                    bulls = impact_elem.find_all('i', {'class': 'grayFullBullishIcon'})
-                    impact = len(bulls)
+                if impact_cell:
+                    impact_span = impact_cell.find('span')
+                    if impact_span:
+                        impact_class = impact_span.get('class', [])
+                        if 'high' in str(impact_class):
+                            impact = 3
+                        elif 'medium' in str(impact_class):
+                            impact = 2
+                        elif 'low' in str(impact_class):
+                            impact = 1
+                
+                # Get actual/forecast/previous
+                actual_cell = row.find('td', class_='calendar__cell calendar__actual')
+                forecast_cell = row.find('td', class_='calendar__cell calendar__forecast')
+                previous_cell = row.find('td', class_='calendar__cell calendar__previous')
                 
                 event_data = {
                     'date': current_date.strftime('%Y-%m-%d'),
-                    'time': time_elem.text.strip() if time_elem else 'TBD',
-                    'country': country,
-                    'event': event_elem.text.strip() if event_elem else 'N/A',
+                    'time': time_cell.get_text(strip=True) if time_cell else 'TBD',
+                    'country': 'United States',
+                    'event': event_cell.get_text(strip=True),
                     'impact': impact,
+                    'actual': actual_cell.get_text(strip=True) if actual_cell else '',
+                    'forecast': forecast_cell.get_text(strip=True) if forecast_cell else '',
+                    'previous': previous_cell.get_text(strip=True) if previous_cell else ''
                 }
-                
-                # Get actual/forecast/previous values
-                try:
-                    actual_elem = row.find('td', {'id': lambda x: x and x.startswith('eventActual_')})
-                    forecast_elem = row.find('td', {'id': lambda x: x and x.startswith('eventForecast_')})
-                    previous_elem = row.find('td', {'id': lambda x: x and x.startswith('eventPrevious_')})
-                    
-                    event_data['actual'] = actual_elem.text.strip() if actual_elem and actual_elem.text.strip() else ''
-                    event_data['forecast'] = forecast_elem.text.strip() if forecast_elem and forecast_elem.text.strip() else ''
-                    event_data['previous'] = previous_elem.text.strip() if previous_elem and previous_elem.text.strip() else ''
-                except:
-                    event_data['actual'] = ''
-                    event_data['forecast'] = ''
-                    event_data['previous'] = ''
                 
                 events.append(event_data)
                 
@@ -196,26 +117,16 @@ def get_calendar():
                 "end": week_end.strftime('%Y-%m-%d'),
                 "weeks": num_weeks
             },
-            "filter": {
-                "country": "United States" if country_filter.lower() != 'all' else "All countries"
-            },
+            "filter": {"country": "United States"},
             "events": events,
             "timestamp": datetime.now().isoformat()
         })
         
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-    
-    finally:
-        if driver:
-            driver.quit()
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/health')
 def health():
-    """Health check endpoint"""
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
 if __name__ == '__main__':
