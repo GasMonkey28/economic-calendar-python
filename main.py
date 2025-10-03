@@ -1,9 +1,9 @@
-# main.py - Complete fixed version with country extraction
+# main.py - Filter for US events this week and next week
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 app = Flask(__name__)
@@ -14,7 +14,10 @@ def home():
     return jsonify({
         "message": "Economic Calendar API",
         "endpoints": {
-            "/calendar": "Get economic calendar events",
+            "/calendar": "Get economic calendar events (default: US only, this week + next week)",
+            "/calendar?weeks=1": "Get only this week",
+            "/calendar?weeks=2": "Get this week + next week (default)",
+            "/calendar?country=all": "Get all countries",
             "/health": "Health check",
             "/": "This page"
         }
@@ -24,6 +27,20 @@ def home():
 def get_calendar():
     """Scrape and return economic calendar from Investing.com"""
     try:
+        # Get query parameters
+        weeks_param = request.args.get('weeks', '2')  # Default: 2 weeks
+        country_filter = request.args.get('country', 'US')  # Default: US only
+        
+        try:
+            num_weeks = int(weeks_param)
+        except:
+            num_weeks = 2
+        
+        # Calculate date range
+        today = datetime.now().date()
+        week_start = today - timedelta(days=today.weekday())  # This Monday
+        week_end = week_start + timedelta(days=7 * num_weeks - 1)  # End of period
+        
         url = "https://www.investing.com/economic-calendar/"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -37,41 +54,50 @@ def get_calendar():
             return jsonify({"error": f"HTTP {response.status_code}"}), 500
         
         soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Find the calendar table
         table = soup.find('table', {'id': 'economicCalendarData'})
         
         if not table:
             return jsonify({"error": "Could not find calendar table"}), 500
         
-        # Parse events
         events = []
         rows = table.find_all('tr', {'class': 'js-event-item'})
         
-        for row in rows[:50]:  # Limit to 50 events
+        # Track current date from headers
+        current_date = today
+        
+        for row in rows:
             try:
-                # Extract basic data
+                # Check if this row has a date attribute
+                event_date_attr = row.get('data-event-datetime')
+                if event_date_attr:
+                    try:
+                        # Parse date from timestamp (format: 2025/10/03)
+                        current_date = datetime.strptime(event_date_attr.split()[0], '%Y/%m/%d').date()
+                    except:
+                        pass
+                
+                # Skip if date is outside our range
+                if current_date < week_start or current_date > week_end:
+                    continue
+                
+                # Extract event data
                 time_elem = row.find('td', {'class': 'time'})
                 event_elem = row.find('td', {'class': 'event'})
                 impact_elem = row.find('td', {'class': 'sentiment'})
                 
-                # Extract country - improved method
+                # Extract country
                 country = 'N/A'
                 country_elem = row.find('td', {'class': 'flagCur'})
                 if country_elem:
-                    # Try to find span with title
                     span = country_elem.find('span')
                     if span and span.get('title'):
                         country = span.get('title')
-                    # Or try i tag with title
                     elif country_elem.find('i'):
                         i_tag = country_elem.find('i')
                         if i_tag.get('title'):
                             country = i_tag.get('title')
-                    # Or get from td title directly
                     elif country_elem.get('title'):
                         country = country_elem.get('title')
-                    # Last resort - check for flag class names
                     else:
                         flag_span = country_elem.find('span', class_='ceFlags')
                         if flag_span:
@@ -81,56 +107,54 @@ def get_calendar():
                                     country = cls.replace('ceFlags_', '').upper()
                                     break
                 
-                # Get impact level (number of bull icons)
+                # Filter by country if needed
+                if country_filter.lower() != 'all' and country != "United States":
+                    continue
+                
+                # Get impact level
                 impact = 0
                 if impact_elem:
                     bulls = impact_elem.find_all('i', {'class': 'grayFullBullishIcon'})
                     impact = len(bulls)
                 
                 event_data = {
+                    'date': current_date.strftime('%Y-%m-%d'),
                     'time': time_elem.text.strip() if time_elem else 'TBD',
                     'country': country,
                     'event': event_elem.text.strip() if event_elem else 'N/A',
                     'impact': impact,
-                    'date': datetime.now().strftime('%Y-%m-%d')
                 }
                 
-                # Try to get actual/forecast/previous values
+                # Get actual/forecast/previous values
                 try:
                     actual_elem = row.find('td', {'id': lambda x: x and x.startswith('eventActual_')})
                     forecast_elem = row.find('td', {'id': lambda x: x and x.startswith('eventForecast_')})
                     previous_elem = row.find('td', {'id': lambda x: x and x.startswith('eventPrevious_')})
                     
-                    if actual_elem and actual_elem.text.strip():
-                        event_data['actual'] = actual_elem.text.strip()
-                    else:
-                        event_data['actual'] = ''
-                        
-                    if forecast_elem and forecast_elem.text.strip():
-                        event_data['forecast'] = forecast_elem.text.strip()
-                    else:
-                        event_data['forecast'] = ''
-                        
-                    if previous_elem and previous_elem.text.strip():
-                        event_data['previous'] = previous_elem.text.strip()
-                    else:
-                        event_data['previous'] = ''
+                    event_data['actual'] = actual_elem.text.strip() if actual_elem and actual_elem.text.strip() else ''
+                    event_data['forecast'] = forecast_elem.text.strip() if forecast_elem and forecast_elem.text.strip() else ''
+                    event_data['previous'] = previous_elem.text.strip() if previous_elem and previous_elem.text.strip() else ''
                 except:
                     event_data['actual'] = ''
                     event_data['forecast'] = ''
                     event_data['previous'] = ''
                 
-# Only add US events
-                if country == "United States":
-                    events.append(event_data)
+                events.append(event_data)
                 
             except Exception as e:
-                # Skip problematic rows
                 continue
         
         return jsonify({
             "status": "success",
             "count": len(events),
+            "date_range": {
+                "start": week_start.strftime('%Y-%m-%d'),
+                "end": week_end.strftime('%Y-%m-%d'),
+                "weeks": num_weeks
+            },
+            "filter": {
+                "country": "United States" if country_filter.lower() != 'all' else "All countries"
+            },
             "events": events,
             "timestamp": datetime.now().isoformat()
         })
