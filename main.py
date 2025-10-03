@@ -41,7 +41,7 @@ def get_calendar():
         week_start = today - timedelta(days=today.weekday())  # This Monday
         week_end = week_start + timedelta(days=7 * num_weeks - 1)  # End of period
         
-        url = "https://www.investing.com/economic-calendar/"
+        url = f"https://www.investing.com/economic-calendar/?from={week_start.strftime('%Y-%m-%d')}&to={week_end.strftime('%Y-%m-%d')}"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
