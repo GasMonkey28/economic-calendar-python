@@ -1,4 +1,4 @@
-# main.py - Copy all of this!
+# main.py - Complete fixed version with country extraction
 
 from flask import Flask, jsonify
 import requests
@@ -15,6 +15,7 @@ def home():
         "message": "Economic Calendar API",
         "endpoints": {
             "/calendar": "Get economic calendar events",
+            "/health": "Health check",
             "/": "This page"
         }
     })
@@ -49,20 +50,46 @@ def get_calendar():
         
         for row in rows[:50]:  # Limit to 50 events
             try:
-                # Extract data
+                # Extract basic data
                 time_elem = row.find('td', {'class': 'time'})
-                country_elem = row.find('td', {'class': 'flagCur'})
                 event_elem = row.find('td', {'class': 'event'})
                 impact_elem = row.find('td', {'class': 'sentiment'})
+                
+                # Extract country - improved method
+                country = 'N/A'
+                country_elem = row.find('td', {'class': 'flagCur'})
+                if country_elem:
+                    # Try to find span with title
+                    span = country_elem.find('span')
+                    if span and span.get('title'):
+                        country = span.get('title')
+                    # Or try i tag with title
+                    elif country_elem.find('i'):
+                        i_tag = country_elem.find('i')
+                        if i_tag.get('title'):
+                            country = i_tag.get('title')
+                    # Or get from td title directly
+                    elif country_elem.get('title'):
+                        country = country_elem.get('title')
+                    # Last resort - check for flag class names
+                    else:
+                        flag_span = country_elem.find('span', class_='ceFlags')
+                        if flag_span:
+                            classes = flag_span.get('class', [])
+                            for cls in classes:
+                                if cls.startswith('ceFlags_'):
+                                    country = cls.replace('ceFlags_', '').upper()
+                                    break
                 
                 # Get impact level (number of bull icons)
                 impact = 0
                 if impact_elem:
-                    impact = len(impact_elem.find_all('i', {'class': 'grayFullBullishIcon'}))
+                    bulls = impact_elem.find_all('i', {'class': 'grayFullBullishIcon'})
+                    impact = len(bulls)
                 
                 event_data = {
                     'time': time_elem.text.strip() if time_elem else 'TBD',
-                    'country': country_elem.get('title', 'N/A') if country_elem else 'N/A',
+                    'country': country,
                     'event': event_elem.text.strip() if event_elem else 'N/A',
                     'impact': impact,
                     'date': datetime.now().strftime('%Y-%m-%d')
@@ -74,18 +101,29 @@ def get_calendar():
                     forecast_elem = row.find('td', {'id': lambda x: x and x.startswith('eventForecast_')})
                     previous_elem = row.find('td', {'id': lambda x: x and x.startswith('eventPrevious_')})
                     
-                    if actual_elem:
+                    if actual_elem and actual_elem.text.strip():
                         event_data['actual'] = actual_elem.text.strip()
-                    if forecast_elem:
+                    else:
+                        event_data['actual'] = ''
+                        
+                    if forecast_elem and forecast_elem.text.strip():
                         event_data['forecast'] = forecast_elem.text.strip()
-                    if previous_elem:
+                    else:
+                        event_data['forecast'] = ''
+                        
+                    if previous_elem and previous_elem.text.strip():
                         event_data['previous'] = previous_elem.text.strip()
+                    else:
+                        event_data['previous'] = ''
                 except:
-                    pass
+                    event_data['actual'] = ''
+                    event_data['forecast'] = ''
+                    event_data['previous'] = ''
                 
                 events.append(event_data)
                 
             except Exception as e:
+                # Skip problematic rows
                 continue
         
         return jsonify({
