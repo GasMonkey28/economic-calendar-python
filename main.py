@@ -1,18 +1,38 @@
-# main.py - Filter for US events this week and next week
+# main.py - Filter for US events this week and next week (Selenium version)
 
 from flask import Flask, jsonify, request
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+import time
 import json
 
 app = Flask(__name__)
+
+def get_chrome_driver():
+    """Initialize Chrome driver with appropriate options"""
+    chrome_options = Options()
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
 
 @app.route('/')
 def home():
     """Main endpoint - returns economic calendar"""
     return jsonify({
-        "message": "Economic Calendar API",
+        "message": "Economic Calendar API (Selenium Version)",
         "endpoints": {
             "/calendar": "Get economic calendar events (default: US only, this week + next week)",
             "/calendar?weeks=1": "Get only this week",
@@ -25,11 +45,12 @@ def home():
 
 @app.route('/calendar')
 def get_calendar():
-    """Scrape and return economic calendar from Investing.com"""
+    """Scrape and return economic calendar from Investing.com using Selenium"""
+    driver = None
     try:
         # Get query parameters
-        weeks_param = request.args.get('weeks', '2')  # Default: 2 weeks
-        country_filter = request.args.get('country', 'US')  # Default: US only
+        weeks_param = request.args.get('weeks', '2')
+        country_filter = request.args.get('country', 'US')
         
         try:
             num_weeks = int(weeks_param)
@@ -38,22 +59,41 @@ def get_calendar():
         
         # Calculate date range
         today = datetime.now().date()
-        week_start = today - timedelta(days=today.weekday())  # This Monday
-        week_end = week_start + timedelta(days=7 * num_weeks - 1)  # End of period
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=7 * num_weeks - 1)
         
-        url = f"https://www.investing.com/economic-calendar/?from={week_start.strftime('%Y-%m-%d')}&to={week_end.strftime('%Y-%m-%d')}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
+        # Initialize Selenium driver
+        driver = get_chrome_driver()
+        driver.get("https://www.investing.com/economic-calendar/")
         
-        response = requests.get(url, headers=headers, timeout=15)
+        # Wait for the table to load
+        wait = WebDriverWait(driver, 15)
+        wait.until(EC.presence_of_element_located((By.ID, "economicCalendarData")))
         
-        if response.status_code != 200:
-            return jsonify({"error": f"HTTP {response.status_code}"}), 500
+        # Give extra time for JavaScript to fully load
+        time.sleep(3)
         
-        soup = BeautifulSoup(response.content, 'html.parser')
+        # Try to load next week's data by clicking the time filter
+        try:
+            # Look for "This Week" or date navigation buttons and click next week
+            time_filter_buttons = driver.find_elements(By.CSS_SELECTOR, ".calendarFilters__item")
+            for button in time_filter_buttons:
+                if "next week" in button.text.lower() or "next" in button.text.lower():
+                    driver.execute_script("arguments[0].click();", button)
+                    time.sleep(2)
+                    break
+        except:
+            pass
+        
+        # Scroll to load more content
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        
+        # Get the page source after all loading
+        html = driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Find the table
         table = soup.find('table', {'id': 'economicCalendarData'})
         
         if not table:
@@ -164,6 +204,10 @@ def get_calendar():
             "status": "error",
             "message": str(e)
         }), 500
+    
+    finally:
+        if driver:
+            driver.quit()
 
 @app.route('/health')
 def health():
