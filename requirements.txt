@@ -4,4 +4,3 @@ beautifulsoup4==4.12.2
 lxml==5.1.0
 gunicorn==21.2.0
 selenium==4.15.2
-webdriver-manager==4.0.1
