@@ -1,4 +1,4 @@
-# main.py - Forex Factory scraper with FIXED date parsing
+# main.py - Forex Factory scraper with RELAXED date parsing
 
 from flask import Flask, jsonify, request
 import requests
@@ -38,20 +38,21 @@ def get_calendar():
         soup = BeautifulSoup(response.content, 'html.parser')
         
         events = []
-        current_date = None
+        current_date = today  # Start with today as fallback
         
         # Find all calendar rows
         rows = soup.find_all('tr', class_='calendar__row')
         
         for row in rows:
             try:
-                # Check if this row has a date
+                # Check if this row has a date cell
                 date_cell = row.find('td', class_='calendar__cell calendar__date')
                 if date_cell:
-                    date_span = date_cell.find('span', class_='date')
-                    if date_span and date_span.get_text(strip=True):
-                        date_text = date_span.get_text(strip=True)
-                        
+                    # Get all text from the date cell
+                    date_text = date_cell.get_text(strip=True)
+                    
+                    # Only update current_date if we found actual date text
+                    if date_text:
                         # Parse dates like "Mon Oct 30", "Today", "Tomorrow", "Yesterday"
                         if date_text.lower() == 'today':
                             current_date = today
@@ -61,18 +62,16 @@ def get_calendar():
                             current_date = today - timedelta(days=1)
                         else:
                             try:
-                                # Parse "Mon Oct 30" format
-                                current_date = datetime.strptime(f"{date_text} {today.year}", "%a %b %d %Y").date()
+                                # Remove extra whitespace and parse "Mon Oct 30" format
+                                date_text_clean = ' '.join(date_text.split())
+                                current_date = datetime.strptime(f"{date_text_clean} {today.year}", "%a %b %d %Y").date()
                                 
-                                # Handle year rollover
+                                # Handle year rollover (if parsed date is way in the past, it's probably next year)
                                 if current_date < today - timedelta(days=180):
-                                    current_date = datetime.strptime(f"{date_text} {today.year + 1}", "%a %b %d %Y").date()
-                            except:
+                                    current_date = datetime.strptime(f"{date_text_clean} {today.year + 1}", "%a %b %d %Y").date()
+                            except Exception as date_error:
+                                # If parsing fails, keep the previous current_date
                                 pass
-                
-                # If we still don't have a date, skip this row
-                if current_date is None:
-                    continue
                 
                 # Skip if outside date range
                 if current_date < week_start or current_date > week_end:
