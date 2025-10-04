@@ -1,9 +1,10 @@
-# main.py - Forex Factory scraper (no Selenium needed)
+# main.py - Forex Factory scraper with FIXED date parsing
 
 from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
+import re
 
 app = Flask(__name__)
 
@@ -27,7 +28,6 @@ def get_calendar():
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=7 * num_weeks - 1)
         
-        # Forex Factory URL - includes this week and next week by default
         url = "https://www.forexfactory.com/calendar"
         
         headers = {
@@ -38,22 +38,41 @@ def get_calendar():
         soup = BeautifulSoup(response.content, 'html.parser')
         
         events = []
-        current_date = today
+        current_date = None
         
         # Find all calendar rows
         rows = soup.find_all('tr', class_='calendar__row')
         
         for row in rows:
             try:
-                # Check if this is a date header row
+                # Check if this row has a date
                 date_cell = row.find('td', class_='calendar__cell calendar__date')
-                if date_cell and date_cell.get_text(strip=True):
-                    date_text = date_cell.get_text(strip=True)
-                    try:
-                        # Parse date like "Fri Oct 4"
-                        current_date = datetime.strptime(f"{date_text} {today.year}", "%a %b %d %Y").date()
-                    except:
-                        pass
+                if date_cell:
+                    date_span = date_cell.find('span', class_='date')
+                    if date_span and date_span.get_text(strip=True):
+                        date_text = date_span.get_text(strip=True)
+                        
+                        # Parse dates like "Mon Oct 30", "Today", "Tomorrow", "Yesterday"
+                        if date_text.lower() == 'today':
+                            current_date = today
+                        elif date_text.lower() == 'tomorrow':
+                            current_date = today + timedelta(days=1)
+                        elif date_text.lower() == 'yesterday':
+                            current_date = today - timedelta(days=1)
+                        else:
+                            try:
+                                # Parse "Mon Oct 30" format
+                                current_date = datetime.strptime(f"{date_text} {today.year}", "%a %b %d %Y").date()
+                                
+                                # Handle year rollover
+                                if current_date < today - timedelta(days=180):
+                                    current_date = datetime.strptime(f"{date_text} {today.year + 1}", "%a %b %d %Y").date()
+                            except:
+                                pass
+                
+                # If we still don't have a date, skip this row
+                if current_date is None:
+                    continue
                 
                 # Skip if outside date range
                 if current_date < week_start or current_date > week_end:
@@ -65,7 +84,7 @@ def get_calendar():
                 impact_cell = row.find('td', class_='calendar__cell calendar__impact')
                 event_cell = row.find('td', class_='calendar__cell calendar__event')
                 
-                if not event_cell:
+                if not event_cell or not event_cell.get_text(strip=True):
                     continue
                 
                 # Get country/currency
@@ -80,12 +99,12 @@ def get_calendar():
                 if impact_cell:
                     impact_span = impact_cell.find('span')
                     if impact_span:
-                        impact_class = impact_span.get('class', [])
-                        if 'high' in str(impact_class):
+                        impact_class = ' '.join(impact_span.get('class', []))
+                        if 'high' in impact_class.lower():
                             impact = 3
-                        elif 'medium' in str(impact_class):
+                        elif 'medium' in impact_class.lower():
                             impact = 2
-                        elif 'low' in str(impact_class):
+                        elif 'low' in impact_class.lower():
                             impact = 1
                 
                 # Get actual/forecast/previous
