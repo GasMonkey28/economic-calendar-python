@@ -1,4 +1,4 @@
-# main.py - Forex Factory scraper with RELAXED date parsing
+# main.py - Forex Factory scraper with DEBUG logging
 
 from flask import Flask, jsonify, request
 import requests
@@ -14,9 +14,42 @@ def home():
         "message": "Economic Calendar API (Forex Factory)",
         "endpoints": {
             "/calendar": "Get economic calendar events",
+            "/calendar/debug": "Get debug info about date parsing",
             "/health": "Health check"
         }
     })
+
+@app.route('/calendar/debug')
+def get_calendar_debug():
+    """Debug endpoint to see what dates are being found"""
+    try:
+        url = "https://www.forexfactory.com/calendar"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        debug_info = []
+        rows = soup.find_all('tr', class_='calendar__row')[:20]  # First 20 rows
+        
+        for i, row in enumerate(rows):
+            date_cell = row.find('td', class_='calendar__cell calendar__date')
+            event_cell = row.find('td', class_='calendar__cell calendar__event')
+            
+            row_info = {
+                'row_number': i,
+                'date_cell_html': str(date_cell)[:200] if date_cell else None,
+                'date_cell_text': date_cell.get_text(strip=True) if date_cell else None,
+                'event': event_cell.get_text(strip=True) if event_cell else None
+            }
+            debug_info.append(row_info)
+        
+        return jsonify({"debug_rows": debug_info})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/calendar')
 def get_calendar():
@@ -38,22 +71,20 @@ def get_calendar():
         soup = BeautifulSoup(response.content, 'html.parser')
         
         events = []
-        current_date = today  # Start with today as fallback
+        current_date = today
+        date_updates = []  # Track when dates change for debugging
         
-        # Find all calendar rows
         rows = soup.find_all('tr', class_='calendar__row')
         
         for row in rows:
             try:
-                # Check if this row has a date cell
                 date_cell = row.find('td', class_='calendar__cell calendar__date')
                 if date_cell:
-                    # Get all text from the date cell
                     date_text = date_cell.get_text(strip=True)
                     
-                    # Only update current_date if we found actual date text
                     if date_text:
-                        # Parse dates like "Mon Oct 30", "Today", "Tomorrow", "Yesterday"
+                        old_date = current_date
+                        
                         if date_text.lower() == 'today':
                             current_date = today
                         elif date_text.lower() == 'tomorrow':
@@ -62,22 +93,23 @@ def get_calendar():
                             current_date = today - timedelta(days=1)
                         else:
                             try:
-                                # Remove extra whitespace and parse "Mon Oct 30" format
                                 date_text_clean = ' '.join(date_text.split())
                                 current_date = datetime.strptime(f"{date_text_clean} {today.year}", "%a %b %d %Y").date()
                                 
-                                # Handle year rollover (if parsed date is way in the past, it's probably next year)
                                 if current_date < today - timedelta(days=180):
                                     current_date = datetime.strptime(f"{date_text_clean} {today.year + 1}", "%a %b %d %Y").date()
-                            except Exception as date_error:
-                                # If parsing fails, keep the previous current_date
+                            except:
                                 pass
+                        
+                        if old_date != current_date:
+                            date_updates.append({
+                                'text': date_text,
+                                'parsed_date': current_date.strftime('%Y-%m-%d')
+                            })
                 
-                # Skip if outside date range
                 if current_date < week_start or current_date > week_end:
                     continue
                 
-                # Extract event details
                 time_cell = row.find('td', class_='calendar__cell calendar__time')
                 currency_cell = row.find('td', class_='calendar__cell calendar__currency')
                 impact_cell = row.find('td', class_='calendar__cell calendar__impact')
@@ -86,14 +118,11 @@ def get_calendar():
                 if not event_cell or not event_cell.get_text(strip=True):
                     continue
                 
-                # Get country/currency
                 country = currency_cell.get_text(strip=True) if currency_cell else 'N/A'
                 
-                # Filter for USD (US events)
                 if country != 'USD':
                     continue
                 
-                # Get impact level
                 impact = 0
                 if impact_cell:
                     impact_span = impact_cell.find('span')
@@ -106,7 +135,6 @@ def get_calendar():
                         elif 'low' in impact_class.lower():
                             impact = 1
                 
-                # Get actual/forecast/previous
                 actual_cell = row.find('td', class_='calendar__cell calendar__actual')
                 forecast_cell = row.find('td', class_='calendar__cell calendar__forecast')
                 previous_cell = row.find('td', class_='calendar__cell calendar__previous')
@@ -136,6 +164,7 @@ def get_calendar():
                 "weeks": num_weeks
             },
             "filter": {"country": "United States"},
+            "date_updates_found": date_updates,  # Show what dates were parsed
             "events": events,
             "timestamp": datetime.now().isoformat()
         })
